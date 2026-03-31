@@ -252,9 +252,7 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
         String rowId4 = (String) selectRs.get(4).get(0);
         String rowId6 = (String) selectRs.get(6).get(0);
 
-        RowIdPseudoColumnNodeRewriter.startLog = true;
-
-        assertQuery("select id, name, rowid from PUBLIC.PERSON as p where p.rowid in (?, ?)")
+        assertQuery("select id, name, rowid from PUBLIC.PERSON where rowid in (?, ?)")
             .withParams(rowId4, rowId6)
             .columnNames("ID", "NAME", "ROWID")
             .matches(QueryChecker.containsIndexScan("PUBLIC", "PERSON", "_key_PK"))
@@ -271,7 +269,7 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
             sql("insert into PUBLIC.PERSON(id, name, age) values(?, ?, ?)", i, "foo" + i, 18 + i);
         }
 
-        List<List<?>> selectRs = sql("select rowid, _key from PUBLIC.PERSON order by id");
+        List<List<?>> selectRs = sql("select rowid from PUBLIC.PERSON order by id");
         Object rowid = selectRs.get(6).get(0);
 
         assertTrue(Objects.toString(rowid), rowid instanceof String);
@@ -485,20 +483,15 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
     private static class RowIdPseudoColumnNodeRewriter implements FlexSoftIgniteSqlNodeRewriter {
         public static final String COLUMN_NAME = "ROWID";
 
-        public static volatile boolean startLog = false;
-
         @Override
         public @Nullable SqlNode rewrite(SqlValidator validator, SqlNode node) {
-            if (startLog)
-                log.info(">>>>> sqlNode: " + node);
-
             if (isRowIdIdent(node)) {
-                SqlIdentifier rowId = (SqlIdentifier)node;
+                SqlIdentifier rowId = (SqlIdentifier) node;
                 SqlIdentifier keyId = rowId.setName(rowId.names.size() - 1, QueryUtils.KEY_FIELD_NAME);
 
                 return RowIdPseudoColumnOperatorTable.TO_ROW_ID_FROM_KEY.createCall(node.getParserPosition(), keyId);
-            } else if (node instanceof SqlCall && ((SqlCall)node).getOperator() == SqlStdOperatorTable.EQUALS) {
-                SqlCall call = (SqlCall)node;
+            } else if (node instanceof SqlCall && ((SqlCall) node).getOperator() == SqlStdOperatorTable.EQUALS) {
+                SqlCall call = (SqlCall) node;
 
                 if (isRowIdCall(call.operand(0))) {
                     return rewriteRowIdEqualsParam(call.getParserPosition(), call.operand(1), call.operand(0));
@@ -507,8 +500,18 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
                 if (isRowIdCall(call.operand(1))) {
                     return rewriteRowIdEqualsParam(call.getParserPosition(), call.operand(0), call.operand(1));
                 }
+            } else if (node instanceof SqlCall && ((SqlCall) node).getOperator() == SqlStdOperatorTable.IN) {
+                SqlCall call = (SqlCall) node;
+
+                if (isRowIdCall(call.operand(0))) {
+                    return rewriteKeyInToKeyFromRowIds(call.getParserPosition(), call.operand(1));
+                }
+
+                if (isRowIdCall(call.operand(1))) {
+                    return rewriteKeyInToKeyFromRowIds(call.getParserPosition(), call.operand(0));
+                }
             } else if (node instanceof SqlSelect) {
-                SqlSelect select = (SqlSelect)node;
+                SqlSelect select = (SqlSelect) node;
 
                 List<SqlNode> selectListItems = select.getSelectList().getList();
                 for (int i = 0; i < selectListItems.size(); i++) {
@@ -565,6 +568,20 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
         private static SqlNode rewriteRowIdEqualsParam(SqlParserPos pos, SqlNode op1, SqlCall rowIdCall) {
             return SqlStdOperatorTable.EQUALS.createCall(pos, rowIdCall.operand(0),
                 RowIdPseudoColumnOperatorTable.TO_KEY_FROM_ROW_ID.createCall(pos, op1));
+        }
+
+        private static SqlNode rewriteKeyInToKeyFromRowIds(SqlParserPos pos, SqlNode op1) {
+            assert op1 instanceof SqlNodeList : "pos=" + pos + "op1=" + op1;
+
+            SqlNodeList op1NodeList = (SqlNodeList) op1;
+
+            for (int i = 0; i < op1NodeList.size(); i++) {
+                SqlNode node = op1NodeList.get(i);
+
+                op1NodeList.set(i, RowIdPseudoColumnOperatorTable.TO_KEY_FROM_ROW_ID.createCall(pos, node));
+            }
+
+            return SqlStdOperatorTable.IN.createCall(pos, new SqlIdentifier(QueryUtils.KEY_FIELD_NAME, pos), op1NodeList);
         }
     }
 }
