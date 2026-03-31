@@ -252,11 +252,12 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
         String rowId4 = (String) selectRs.get(4).get(0);
         String rowId6 = (String) selectRs.get(6).get(0);
 
-        assertQuery("select id, name, rowid from PUBLIC.PERSON as p where p.rowid in (?, ?) order by id")
+        RowIdPseudoColumnNodeRewriter.startLog = true;
+
+        assertQuery("select id, name, rowid from PUBLIC.PERSON as p where p.rowid in (?, ?)")
             .withParams(rowId4, rowId6)
             .columnNames("ID", "NAME", "ROWID")
-            // TODO: Может и сделаю
-            //.matches(QueryChecker.containsIndexScan("PUBLIC", "PERSON", "_key_PK"))
+            .matches(QueryChecker.containsIndexScan("PUBLIC", "PERSON", "_key_PK"))
             .returns(4, "foo4", rowId4)
             .returns(6, "foo6", rowId6)
             .check();
@@ -484,8 +485,13 @@ public class RowIdPseudoColumnTest extends AbstractBasicIntegrationTest {
     private static class RowIdPseudoColumnNodeRewriter implements FlexSoftIgniteSqlNodeRewriter {
         public static final String COLUMN_NAME = "ROWID";
 
+        public static volatile boolean startLog = false;
+
         @Override
         public @Nullable SqlNode rewrite(SqlValidator validator, SqlNode node) {
+            if (startLog)
+                log.info(">>>>> sqlNode: " + node);
+
             if (isRowIdIdent(node)) {
                 SqlIdentifier rowId = (SqlIdentifier)node;
                 SqlIdentifier keyId = rowId.setName(rowId.names.size() - 1, QueryUtils.KEY_FIELD_NAME);
