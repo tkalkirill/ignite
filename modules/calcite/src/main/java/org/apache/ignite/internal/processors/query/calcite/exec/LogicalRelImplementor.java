@@ -17,8 +17,10 @@
 
 package org.apache.ignite.internal.processors.query.calcite.exec;
 
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -38,10 +40,15 @@ import org.apache.calcite.rel.core.Minus;
 import org.apache.calcite.rel.core.Spool;
 import org.apache.calcite.rel.core.Window;
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
+import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexUtil;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.mapping.IntPair;
 import org.apache.ignite.internal.processors.failure.FailureProcessor;
@@ -75,6 +82,7 @@ import org.apache.ignite.internal.processors.query.calcite.exec.rel.ScanStorageN
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.ScanTableRowNode;
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.SortAggregateNode;
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.SortNode;
+import org.apache.ignite.internal.processors.query.calcite.exec.rel.TableFunctionScanNode;
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.TableSpoolNode;
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.UncollectNode;
 import org.apache.ignite.internal.processors.query.calcite.exec.rel.UnionAllNode;
@@ -741,6 +749,37 @@ public class LogicalRelImplementor<Row> implements IgniteRelVisitor<Node<Row>> {
 
     /** {@inheritDoc} */
     @Override public Node<Row> visit(IgniteTableFunctionScan rel) {
+        if (!rel.getInputs().isEmpty()) {
+            RelDataTypeFactory.Builder argsTypeBuilder = ctx.getTypeFactory().builder();
+
+            for (int i = 0; i < rel.getInputs().size(); i++)
+                argsTypeBuilder.add("CURSOR$" + i, rel.getInputs().get(i).getRowType());
+
+            RelDataType argsType = argsTypeBuilder.build();
+            RexNode call = rel.getCall().accept(new RexShuttle() {
+                @Override public RexNode visitCall(RexCall call) {
+                    if (call.getKind() == SqlKind.CAST
+                        && call.getType().getSqlTypeName() == SqlTypeName.CURSOR)
+                        return call.getOperands().get(0).accept(this);
+
+                    return super.visitCall(call);
+                }
+            });
+            Function<Row, Iterable<?>> function = expressionFactory.execute(call, argsType,
+                Collections.nCopies(rel.getInputs().size(), ResultSet.class));
+            RelDataType rowType = rel.getRowType();
+            RowFactory<Row> argsFactory = ctx.rowHandler().factory(ctx.getTypeFactory(), argsType);
+            RowFactory<Row> resultFactory = ctx.rowHandler().factory(ctx.getTypeFactory(), rowType);
+            List<RelDataType> inputTypes = Commons.transform(rel.getInputs(), RelNode::getRowType);
+
+            TableFunctionScanNode<Row> node = new TableFunctionScanNode<>(ctx, rowType, inputTypes,
+                function, argsFactory, resultFactory);
+
+            node.register(Commons.transform(rel.getInputs(), this::visit));
+
+            return node;
+        }
+
         Supplier<Iterable<?>> dataSupplier = expressionFactory.execute(rel.getCall());
 
         RelDataType rowType = rel.getRowType();

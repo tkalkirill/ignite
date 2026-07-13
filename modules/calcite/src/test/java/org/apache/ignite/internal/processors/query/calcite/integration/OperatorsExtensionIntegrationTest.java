@@ -17,7 +17,12 @@
 package org.apache.ignite.internal.processors.query.calcite.integration;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.Supplier;
 import com.google.common.collect.ImmutableList;
@@ -35,11 +40,14 @@ import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlFunctionCategory;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.sql.SqlOperatorBinding;
+import org.apache.calcite.sql.SqlTableFunction;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.fun.SqlTrimFunction;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.OperandTypes;
 import org.apache.calcite.sql.type.ReturnTypes;
+import org.apache.calcite.sql.type.SqlReturnTypeInference;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.util.ReflectiveSqlOperatorTable;
 import org.apache.calcite.sql.util.SqlOperatorTables;
@@ -107,6 +115,12 @@ public class OperatorsExtensionIntegrationTest extends AbstractBasicIntegrationT
                             OperatorsExtensionIntegrationTest.class.getMethod("toNumber", String.class),
                             NullPolicy.STRICT
                         );
+
+                        RexImpTable.INSTANCE.defineMethod(
+                            OperatorTable.MEDIAN_PRICE,
+                            OperatorsExtensionIntegrationTest.class.getMethod("medianPrice", ResultSet.class),
+                            NullPolicy.STRICT
+                        );
                     }
                     catch (NoSuchMethodException e) {
                         throw new RuntimeException(e);
@@ -158,6 +172,21 @@ public class OperatorsExtensionIntegrationTest extends AbstractBasicIntegrationT
             .check();
     }
 
+    /** */
+    @Test
+    public void testTableFunctionWithCursorArgument() {
+        sql("CREATE TABLE prices(id INT PRIMARY KEY, price DECIMAL(10, 2))");
+
+        sql("INSERT INTO prices(id, price) VALUES (?, ?)", 1, new BigDecimal("10.00"));
+        sql("INSERT INTO prices(id, price) VALUES (?, ?)", 2, new BigDecimal("20.00"));
+        sql("INSERT INTO prices(id, price) VALUES (?, ?)", 3, new BigDecimal("30.00"));
+        sql("INSERT INTO prices(id, price) VALUES (?, ?)", 4, new BigDecimal("40.00"));
+
+        assertQuery("SELECT value FROM TABLE(median_price(CURSOR(SELECT price FROM prices)))")
+            .returns(new BigDecimal("25.00"))
+            .check();
+    }
+
     /** Rewrites LTRIM with 2 parameters. */
     public static SqlCall rewriteLtrim(SqlValidator validator, SqlCall call) {
         if (call.operandCount() != 2)
@@ -174,6 +203,32 @@ public class OperatorsExtensionIntegrationTest extends AbstractBasicIntegrationT
     /** Implementor for {@code TO_NUMBER} function. */
     public static BigDecimal toNumber(String s) {
         return new BigDecimal(s);
+    }
+
+    /** Implementor for {@code MEDIAN_PRICE} table function. */
+    public static Iterable<Object[]> medianPrice(ResultSet prices) {
+        List<BigDecimal> vals = new ArrayList<>();
+
+        try {
+            while (prices.next())
+                vals.add(prices.getBigDecimal(1));
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+
+        vals.sort(Comparator.naturalOrder());
+
+        int size = vals.size();
+
+        if (size == 0)
+            return Collections.singletonList(new Object[] {null});
+
+        BigDecimal median = size % 2 == 1
+            ? vals.get(size / 2)
+            : vals.get(size / 2 - 1).add(vals.get(size / 2)).divide(BigDecimal.valueOf(2));
+
+        return Collections.singletonList(new Object[] {median});
     }
 
     /** Extended operator table. */
@@ -220,6 +275,9 @@ public class OperatorsExtensionIntegrationTest extends AbstractBasicIntegrationT
 
         /** */
         public static final SqlAggFunction TEST_SUM = new SqlTestSumAggFunction();
+
+        /** */
+        public static final SqlFunction MEDIAN_PRICE = new SqlMedianPriceFunction();
     }
 
     /** Extended convertlet table. */
@@ -323,6 +381,33 @@ public class OperatorsExtensionIntegrationTest extends AbstractBasicIntegrationT
         /** {@inheritDoc} */
         @Override public RelDataType returnType(IgniteTypeFactory typeFactory) {
             return typeFactory.createSqlType(org.apache.calcite.sql.type.SqlTypeName.BIGINT);
+        }
+    }
+
+    /** Table function returning the median value from a cursor. */
+    private static class SqlMedianPriceFunction extends SqlFunction implements SqlTableFunction {
+        /** */
+        private SqlMedianPriceFunction() {
+            super(
+                "MEDIAN_PRICE",
+                SqlKind.OTHER_FUNCTION,
+                ReturnTypes.CURSOR,
+                null,
+                OperandTypes.CURSOR,
+                SqlFunctionCategory.USER_DEFINED_TABLE_FUNCTION
+            );
+        }
+
+        /** {@inheritDoc} */
+        @Override public SqlReturnTypeInference getRowTypeInference() {
+            return this::inferRowType;
+        }
+
+        /** */
+        private RelDataType inferRowType(SqlOperatorBinding binding) {
+            RelDataType valType = binding.getTypeFactory().createSqlType(SqlTypeName.DECIMAL, 10, 2);
+
+            return binding.getTypeFactory().builder().add("VALUE", valType).build();
         }
     }
 }

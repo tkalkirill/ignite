@@ -250,6 +250,7 @@ public class IgniteStdSqlOperatorTable extends ReflectiveSqlOperatorTable {
 
         register(SqlStdOperatorTable.MAP_QUERY);
         register(SqlStdOperatorTable.ARRAY_QUERY);
+        register(SqlStdOperatorTable.CURSOR);
 
         // Multiset.
         // TODO https://issues.apache.org/jira/browse/IGNITE-15551

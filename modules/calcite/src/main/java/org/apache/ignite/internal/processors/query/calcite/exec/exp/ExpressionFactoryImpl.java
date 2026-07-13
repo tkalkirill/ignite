@@ -304,6 +304,12 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
     }
 
     /** {@inheritDoc} */
+    @Override public <T> Function<Row, T> execute(RexNode node, RelDataType inputType, List<Type> fieldStorageTypes) {
+        return new FunctionValueImpl<T>(scalar(node, inputType, fieldStorageTypes),
+            ctx.rowHandler().factory(typeFactory.getJavaClass(node.getType())));
+    }
+
+    /** {@inheritDoc} */
     @Override public Iterable<Row> values(List<RexLiteral> values, RelDataType rowType) {
         RowHandler<Row> hnd = ctx.rowHandler();
         RowFactory<Row> factory = hnd.factory(typeFactory, rowType);
@@ -472,6 +478,14 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
         return scalar(ImmutableList.of(node), type);
     }
 
+    /** */
+    private SingleScalar scalar(RexNode node, RelDataType type, List<Type> fieldStorageTypes) {
+        List<RexNode> nodes = ImmutableList.of(node);
+
+        return (SingleScalar)SCALAR_CACHE.computeIfAbsent(digest(nodes, type, false) + fieldStorageTypes,
+            k -> compile(nodes, type, false, fieldStorageTypes));
+    }
+
     /**
      * Creates {@link SingleScalar}, a code-generated expressions evaluator.
      *
@@ -481,7 +495,7 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
      */
     private SingleScalar scalar(List<RexNode> nodes, RelDataType type) {
         return (SingleScalar)SCALAR_CACHE.computeIfAbsent(digest(nodes, type, false),
-            k -> compile(nodes, type, false));
+            k -> compile(nodes, type, false, null));
     }
 
     /**
@@ -495,11 +509,12 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
         ImmutableList<RexNode> nodes = ImmutableList.of(node);
 
         return (BiScalar)SCALAR_CACHE.computeIfAbsent(digest(nodes, type, true),
-            k -> compile(nodes, type, true));
+            k -> compile(nodes, type, true, null));
     }
 
     /** */
-    private Scalar compile(List<RexNode> nodes, RelDataType type, boolean biInParams) {
+    private Scalar compile(List<RexNode> nodes, RelDataType type, boolean biInParams,
+        List<Type> fieldStorageTypes) {
         if (type == null)
             type = EMPTY_TYPE;
 
@@ -544,7 +559,7 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
                 IgniteMethod.CONTEXT_ROW_HANDLER.method()));
 
         InputGetter inputGetter = biInParams ? new BiFieldGetter(hnd_, in1_, in2_, type) :
-            new FieldGetter(hnd_, in1_, type);
+            new FieldGetter(hnd_, in1_, type, fieldStorageTypes);
 
         Function1<String, InputGetter> correlates = new CorrelatesBuilder(builder, ctx_, hnd_).build(nodes);
 
@@ -747,6 +762,29 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
         @Override public T get() {
             Row res = factory.create();
             scalar.execute(ctx, null, res);
+
+            return (T)ctx.rowHandler().get(0, res);
+        }
+    }
+
+    /** */
+    private class FunctionValueImpl<T> implements Function<Row, T> {
+        /** */
+        private final SingleScalar scalar;
+
+        /** */
+        private final RowFactory<Row> factory;
+
+        /** */
+        private FunctionValueImpl(SingleScalar scalar, RowFactory<Row> factory) {
+            this.scalar = scalar;
+            this.factory = factory;
+        }
+
+        /** {@inheritDoc} */
+        @Override public T apply(Row row) {
+            Row res = factory.create();
+            scalar.execute(ctx, row, res);
 
             return (T)ctx.rowHandler().get(0, res);
         }
@@ -1073,7 +1111,12 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
     private class FieldGetter extends CommonFieldGetter {
         /** */
         private FieldGetter(Expression hnd_, Expression row1_, RelDataType rowType) {
-            super(hnd_, row1_, rowType);
+            this(hnd_, row1_, rowType, null);
+        }
+
+        /** */
+        private FieldGetter(Expression hnd_, Expression row1_, RelDataType rowType, List<Type> fieldStorageTypes) {
+            super(hnd_, row1_, rowType, fieldStorageTypes);
         }
 
         /** {@inheritDoc} */
@@ -1100,20 +1143,32 @@ public class ExpressionFactoryImpl<Row> implements ExpressionFactory<Row> {
         protected final RelDataType rowType;
 
         /** */
+        private final List<Type> fieldStorageTypes;
+
+        /** */
         protected abstract Expression fillExpressions(BlockBuilder list, int index);
 
         /** */
         private CommonFieldGetter(Expression hnd_, Expression row_, RelDataType rowType) {
+            this(hnd_, row_, rowType, null);
+        }
+
+        /** */
+        private CommonFieldGetter(Expression hnd_, Expression row_, RelDataType rowType,
+            List<Type> fieldStorageTypes) {
             this.hnd_ = hnd_;
             this.row1_ = row_;
             this.rowType = rowType;
+            this.fieldStorageTypes = fieldStorageTypes;
         }
 
         /** {@inheritDoc} */
         @Override public Expression field(BlockBuilder list, int index, Type desiredType) {
             Expression fldExpression = fillExpressions(list, index);
 
-            Type fieldType = typeFactory.getJavaClass(rowType.getFieldList().get(index).getType());
+            Type fieldType = fieldStorageTypes == null
+                ? typeFactory.getJavaClass(rowType.getFieldList().get(index).getType())
+                : fieldStorageTypes.get(index);
 
             if (desiredType == null) {
                 desiredType = fieldType;

@@ -20,7 +20,6 @@ package org.apache.ignite.internal.processors.query.calcite.rel;
 import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Set;
-import com.google.common.collect.ImmutableList;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelInput;
@@ -30,7 +29,7 @@ import org.apache.calcite.rel.metadata.RelColumnMapping;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
-import org.apache.ignite.internal.util.typedef.F;
+import org.apache.ignite.internal.processors.query.calcite.util.Commons;
 
 import static org.apache.ignite.internal.processors.query.calcite.trait.TraitUtils.changeTraits;
 
@@ -47,10 +46,11 @@ public class IgniteTableFunctionScan extends TableFunctionScan implements Ignite
     public IgniteTableFunctionScan(
         RelOptCluster cluster,
         RelTraitSet traits,
+        List<RelNode> inputs,
         RexNode call,
         RelDataType rowType
     ) {
-        super(cluster, traits, ImmutableList.of(), call, null, rowType, null);
+        super(cluster, traits, inputs, call, null, rowType, null);
     }
 
     /**
@@ -64,7 +64,8 @@ public class IgniteTableFunctionScan extends TableFunctionScan implements Ignite
 
     /** {@inheritDoc} */
     @Override public IgniteRel clone(RelOptCluster cluster, List<IgniteRel> inputs) {
-        return new IgniteTableFunctionScan(cluster, getTraitSet(), getCall(), getRowType());
+        return new IgniteTableFunctionScan(cluster, getTraitSet(),
+            Commons.transform(inputs, input -> (RelNode)input), getCall(), getRowType());
     }
 
     /** {@inheritDoc} */
@@ -75,9 +76,7 @@ public class IgniteTableFunctionScan extends TableFunctionScan implements Ignite
     /** {@inheritDoc} */
     @Override public TableFunctionScan copy(RelTraitSet traitSet, List<RelNode> inputs, RexNode rexCall,
         Type elementType, RelDataType rowType, Set<RelColumnMapping> columnMappings) {
-        assert F.isEmpty(inputs);
-
-        return this;
+        return new IgniteTableFunctionScan(getCluster(), traitSet, inputs, rexCall, rowType);
     }
 
     /** {@inheritDoc} */

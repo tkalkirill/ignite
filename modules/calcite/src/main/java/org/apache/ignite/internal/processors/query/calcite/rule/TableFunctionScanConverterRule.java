@@ -16,11 +16,13 @@
  */
 package org.apache.ignite.internal.processors.query.calcite.rule;
 
+import java.util.List;
 import java.util.Set;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.PhysicalNode;
+import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.CorrelationId;
 import org.apache.calcite.rel.logical.LogicalTableFunctionScan;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
@@ -29,8 +31,8 @@ import org.apache.ignite.internal.processors.query.calcite.rel.IgniteTableFuncti
 import org.apache.ignite.internal.processors.query.calcite.trait.CorrelationTrait;
 import org.apache.ignite.internal.processors.query.calcite.trait.IgniteDistributions;
 import org.apache.ignite.internal.processors.query.calcite.trait.RewindabilityTrait;
+import org.apache.ignite.internal.processors.query.calcite.util.Commons;
 import org.apache.ignite.internal.processors.query.calcite.util.RexUtils;
-import org.apache.ignite.internal.util.typedef.F;
 
 /**
  * Rule to convert a {@link LogicalTableFunctionScan} to an {@link IgniteTableFunctionScan}.
@@ -46,18 +48,24 @@ public class TableFunctionScanConverterRule extends AbstractIgniteConverterRule<
 
     /** {@inheritDoc} */
     @Override protected PhysicalNode convert(RelOptPlanner planner, RelMetadataQuery mq, LogicalTableFunctionScan rel) {
-        assert F.isEmpty(rel.getInputs());
+        boolean hasInputs = !rel.getInputs().isEmpty();
 
         RelTraitSet traitSet = rel.getTraitSet()
             .replace(IgniteConvention.INSTANCE)
             .replace(RewindabilityTrait.REWINDABLE)
-            .replace(IgniteDistributions.broadcast());
+            .replace(hasInputs ? IgniteDistributions.single() : IgniteDistributions.broadcast());
+
+        RelTraitSet inputTraits = rel.getCluster().traitSetOf(IgniteConvention.INSTANCE)
+            .replace(RewindabilityTrait.REWINDABLE)
+            .replace(IgniteDistributions.single());
+
+        List<RelNode> inputs = Commons.transform(rel.getInputs(), input -> convert(input, inputTraits));
 
         Set<CorrelationId> corrIds = RexUtils.extractCorrelationIds(rel.getCall());
 
         if (!corrIds.isEmpty())
             traitSet = traitSet.replace(CorrelationTrait.correlations(corrIds));
 
-        return new IgniteTableFunctionScan(rel.getCluster(), traitSet, rel.getCall(), rel.getRowType());
+        return new IgniteTableFunctionScan(rel.getCluster(), traitSet, inputs, rel.getCall(), rel.getRowType());
     }
 }

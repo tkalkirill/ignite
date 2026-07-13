@@ -17,6 +17,7 @@
 
 package org.apache.ignite.internal.processors.query.calcite.exec.exp;
 
+import java.lang.reflect.Type;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.BiPredicate;
@@ -128,4 +129,9 @@ public interface ExpressionFactory<Row> {
      * Executes expression.
      */
     <T> Supplier<T> execute(RexNode node);
+
+    /**
+     * Executes expression against an input row.
+     */
+    <T> Function<Row, T> execute(RexNode node, RelDataType inputType, List<Type> fieldStorageTypes);
 }

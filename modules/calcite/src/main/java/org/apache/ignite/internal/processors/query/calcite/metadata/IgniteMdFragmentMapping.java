@@ -227,7 +227,18 @@ public class IgniteMdFragmentMapping implements MetadataHandler<FragmentMappingM
      * See {@link IgniteMdFragmentMapping#fragmentMapping(RelNode, RelMetadataQuery, MappingQueryContext)}
      */
     public FragmentMapping fragmentMapping(IgniteTableFunctionScan rel, RelMetadataQuery mq, MappingQueryContext ctx) {
-        return FragmentMapping.create();
+        FragmentMapping res = null;
+
+        for (RelNode input : rel.getInputs()) {
+            try {
+                res = res == null ? _fragmentMapping(input, mq, ctx) : res.colocate(_fragmentMapping(input, mq, ctx));
+            }
+            catch (ColocationMappingException e) {
+                throw new NodeMappingException("Failed to calculate physical distribution", input, e);
+            }
+        }
+
+        return res == null ? FragmentMapping.create() : res;
     }
 
     /**

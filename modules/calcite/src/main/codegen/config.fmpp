@@ -167,7 +167,6 @@ data: {
       "CURRENT_ROLE"
       "CURRENT_ROW"
       "CURRENT_TRANSFORM_GROUP_FOR_TYPE"
-      "CURSOR"
       "CYCLE"
       "DATE"
       "DATETIME"
